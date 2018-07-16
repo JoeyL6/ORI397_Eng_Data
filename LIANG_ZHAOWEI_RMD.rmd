@@ -1,0 +1,658 @@
+# ME397 Engineering Data Analysis
+# Final Projects - Loan Delinquency prediction using machine learning
+# Zhaowei Liang
+
+```{r}
+#import libraries
+#visulization libraries
+library(ggplot2)
+
+#Machine Learning libraries
+
+library(caret)
+library(xgboost)
+library(mlbench)
+library(randomForest)
+library(stepPlr)
+#library(party)
+#library(mboost)
+
+#Utilities
+
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(GGally)
+#library(parallel)
+library(doParallel)
+#library(doMC)
+library("Hmisc")
+```
+
+```{r}
+#registerDoMC(cores = 18)
+```
+
+
+```{r}
+#import data
+raw <- read.csv("LIANG_ZHAOWEI_LOANDATA.csv")
+```
+
+```{r}
+# Confirm loaded data
+dim(raw)
+```
+## 1. Data Clearning
+
+```{r}
+# take a brief look of all features
+str(raw)
+```
+### 1.1 Drop evidentally irrelevant or unnecessary information
+ [1] "ListingKey"                         
+ [2] "ListingNumber"                      
+[24] "GroupKey"                           
+[51] "LoanKey"                            
+[67] "MemberKey"                          
+```{r}
+# drop Administrative keys
+r1 <- c("ListingKey","ListingNumber", "GroupKey", "LoanKey", "MemberKey", "LoanNumber")
+#preserve raw for future reference 
+clean <- raw[,!names(raw) %in% r1]
+
+# Drop Highly Correlated Keys
+r2 <- c("CreditScoreRangeUpper", "CreditGrade", "ProsperRating..Alpha.")
+clean <- clean[,!names(clean) %in% r2]
+
+# Drop all columns related to dates, since the model we build should not be
+# depend on any specific date
+r3 <- c("ListingCreationDate", "ClosedDate", "DateCreditPulled", 
+        "LoanOriginationDate", "LoanOriginationQuarter", "MemberKey")
+clean <- clean[,!names(clean) %in% r3]
+
+# Any feature that related to loans with "Current" Status should be droped.
+# This analysis is based on completed or overdue/charged off/Defaulted loans.
+
+r4 <- c("LoanCurrentDaysDelinquent", "LoanFirstDefaultedCycleNumber", "LoanMonthsSinceOrigination", "LP_CustomerPayments",
+         "LP_CustomerPrincipalPayments", "LP_InterestandFees", "LP_ServiceFees", "LP_CollectionFees", "LP_GrossPrincipalLoss",
+         "LP_NetPrincipalLoss","LP_NonPrincipalRecoverypayments")
+clean <- clean[,!names(clean) %in% r4]
+
+```
+
+### 1.3 Fill out missing values
+```{r}
+# Some value is missing because they are zero according to the data dictionary
+# fill them with 0
+clean[is.na(clean$TotalProsperLoans),"TotalProsperLoans"]<- median(0,na.rm = T)
+clean[is.na(clean$TotalProsperPaymentsBilled),"TotalProsperPaymentsBilled"]<- mean(0,na.rm = T)
+clean[is.na(clean$OnTimeProsperPayments),"OnTimeProsperPayments"]<- mean(0,na.rm = T)
+clean[is.na(clean$ProsperPaymentsLessThanOneMonthLate),"ProsperPaymentsLessThanOneMonthLate"]<- mean(0,na.rm = T)
+clean[is.na(clean$ProsperPaymentsOneMonthPlusLate),"ProsperPaymentsOneMonthPlusLate"]<- mean(0,na.rm = T)
+clean[is.na(clean$ProsperPrincipalBorrowed),"ProsperPrincipalBorrowed"]<- mean(0,na.rm = T)
+clean[is.na(clean$ProsperPrincipalOutstanding),"ProsperPrincipalOutstanding"]<- mean(0,na.rm = T)
+clean[is.na(clean$CurrentCreditLines),"CurrentCreditLines"]<- mean(0,na.rm = T)
+```
+
+```{r}
+#Test
+sum(is.na(clean$TotalProsperLoans))
+```
+
+```{r}
+# Some numerical columns with low percentage of NA value can be filled with 
+# mean values
+clean[is.na(clean$OpenCreditLines),"OpenCreditLines"]<-mean(clean$OpenCreditLines,na.rm = T)
+clean[is.na(clean$AmountDelinquent),"AmountDelinquent"]<-mean(clean$AmountDelinquent,na.rm = T)
+clean[is.na(clean$PublicRecordsLast12Months),"PublicRecordsLast12Months"]<-mean(clean$PublicRecordsLast12Months,na.rm = T)
+clean[is.na(clean$RevolvingCreditBalance),"RevolvingCreditBalance"]<-mean(clean$RevolvingCreditBalance,na.rm = T)
+clean[is.na(clean$BankcardUtilization),"BankcardUtilization"]<-mean(clean$BankcardUtilization,na.rm = T)
+clean[is.na(clean$AvailableBankcardCredit),"AvailableBankcardCredit"]<-mean(clean$AvailableBankcardCredit,na.rm = T)
+clean[is.na(clean$TotalTrades),"TotalTrades"]<-mean(clean$TotalTrades,na.rm = T)
+clean[is.na(clean$TradesNeverDelinquent..percentage.),"TradesNeverDelinquent..percentage."]<-mean(clean$TradesNeverDelinquent..percentage.,na.rm = T)
+clean[is.na(clean$TradesOpenedLast6Months),"TradesOpenedLast6Months"]<-mean(clean$TradesOpenedLast6Months,na.rm = T)
+clean[is.na(clean$InquiriesLast6Months),"InquiriesLast6Months"]<-mean(clean$InquiriesLast6Months,na.rm = T)
+clean[is.na(clean$TotalInquiries),"TotalInquiries"]<-mean(clean$TotalInquiries,na.rm = T)
+clean[is.na(clean$CurrentDelinquencies),"CurrentDelinquencies"]<-mean(clean$CurrentDelinquencies,na.rm = T)
+clean[is.na(clean$DelinquenciesLast7Years),"DelinquenciesLast7Years"]<-mean(clean$DelinquenciesLast7Years,na.rm = T)
+clean[is.na(clean$DebtToIncomeRatio),"DebtToIncomeRatio"] <- mean((clean$MonthlyLoanPayment / (clean$StatedMonthlyIncome + 1)),na.rm = T)
+```
+
+```{r}
+#test
+sum(is.na(clean$OpenCreditLines))
+```
+
+```{r}
+# Features with high standard deviation and low percentage of missing value will
+# replaced by medians
+clean[is.na(clean$EstimatedLoss),"EstimatedLoss"]=
+  median(clean$EstimatedLoss,na.rm = T)
+
+sum(is.na(clean$EstimatedLoss))
+
+clean$EstimatedReturn <- 
+  mean((clean$EstimatedEffectiveYield - clean$EstimatedLoss),na.rm = T)
+
+sum(is.na(clean$EstimatedReturn))
+
+clean[is.na(clean$ProsperScore),"ProsperScore"]<-
+  median(clean$ProsperScore,na.rm = T)
+
+sum(is.na(clean$ProsperScore))
+```
+
+```{r}
+# Some missing values can be calculated based on  clear relationship to other 
+# features 
+borrower_fees <- as.numeric(clean$BorrowerAPR)-as.numeric(clean$BorrowerRate)
+borrower_fees_median <- mean(c(borrower_fees))
+clean[is.na(clean$BorrowerAPR),"BorrowerAPR"] <-  
+  median(clean$BorrowerAPR,na.rm = T)
+
+sum(is.na(clean$BorrowerAPR))
+
+estimated_loss_from_fees  <- as.numeric(clean$BorrowerRate)-as.numeric(clean$EstimatedEffectiveYield)
+borrower_fees_median = mean(c(estimated_loss_from_fees))
+clean[is.na(clean$EstimatedEffectiveYield),"EstimatedEffectiveYield"]<- median(clean$EstimatedEffectiveYield,na.rm = T)
+sum(is.na(clean$EstimatedEffectiveYield))
+
+# The Debt to Income Ratio, although some case is not varifiable, can be calculated
+# Based on some other values
+
+```
+```{r}
+sum(is.na(clean$DebtToIncomeRatio))
+```
+
+
+### 1.3 Combine all past due condition into one category = "PastDue"
+```{r}
+PastDue <- c("Past Due (>120 days)",
+             "Past Due (1-15 days)",
+             "Past Due (16-30 days)",
+             "Past Due (31-60 days)",
+             "Past Due (61-90 days)",
+             "Past Due (91-120 days)")
+clean$LoanStatus <- as.character(clean$LoanStatus)
+clean$LoanStatus[clean$LoanStatus %in% PastDue] <- "PastDue"
+```
+
+### 1.4 Deleted Loan data with "Current" Status
+Current means the loan is not due yet and we have no other way to determine
+weahter the borrowers will pay it off or not.
+```{r}
+idx <- which(clean$LoanStatus != 'Current')
+clean <- clean[idx,]
+```
+
+```{r}
+#Test
+table(clean$LoanStatus)
+```
+```{r}
+dim(clean)
+```
+
+
+```{r}
+# Group up Delinquent
+# Completed loan -> Completed, Others -> Deliquency
+clean$LoanStatus[clean$LoanStatus == "Cancelled"] <- "deliquency"
+clean$LoanStatus[clean$LoanStatus == "Defaulted"] <- "deliquency"
+clean$LoanStatus[clean$LoanStatus == "FinalPaymentInProgress"] <- c("deliquency")
+clean$LoanStatus[clean$LoanStatus == "PastDue"] <- "deliquency"
+clean$LoanStatus[clean$LoanStatus == "Chargedoff"] <- "deliquency"
+ 
+```
+
+```{r}
+# Check the cleaned dataset
+dim(clean)
+loandata <- clean
+```
+
+## 2 Explotory Data Analysis
+### 2.1 Worth Investigating?
+```{r}
+prop.table(table(loandata$LoanStatus))
+```
+### 2.2 Credit Score vs Deliquncy
+
+
+```{r}
+ggplot(data = loandata, aes(x = LoanStatus, y = CreditScoreRangeLower)) +
+      geom_boxplot() + 
+  labs(title ="Deliquency state vs Credit Score", y = "Credit Score")
+```
+### 2.3 Categorical Variables - Listing Categories
+```{r}
+# the listing Category is in numerical form. For a better view, I mapped their English Description 
+
+CategoryName <- c("Not Available", "Debt Consolidation", "Home Improvement", 
+                  "Business", "Personal Loan", 
+                     "Student Use", "Auto", "Other", "Baby&Adoption", "Boat", 
+                  "Cosmetic Procedure", 
+                      "Engagement Ring", "Green Loans","Household Expenses", 
+                  "Large Purchases", "Medical/Dental", 
+                     "Motorcycle", "RV", "Taxes", "Vacation", "Wedding Loans")
+#create a new column and map full category name on this new column
+loandata$ListingCategory <- CategoryName[(loandata$ListingCategory..numeric.)+1]
+
+ggplot(data = loandata, aes(ListingCategory, Investors)) + geom_boxplot() + 
+  coord_flip()
+```
+
+### 2.4 Deliquncy State vs loan amount and credit score 
+```{r}
+ggplot(data = loandata, 
+       aes(StatedMonthlyIncome, CreditScoreRangeLower, 
+           colour = factor(LoanStatus))) + 
+geom_jitter(alpha = 0.1) + xlim(0, 10000)
+```
+### 2.5 Investors vs Credit Score and Loan Original Amount
+
+```{r}
+ggplot(data = loandata, aes(x = CreditScoreRangeLower, y = LoanOriginalAmount)) +
+         geom_point(aes(colour = Investors)) + 
+        scale_colour_gradient(low = "white", high = "red")
+```
+## 3 Machine Learning - training, testing and analysis
+### 3.1 Preprocessing
+#### 3.1.1 Group up BankCardUtilization
+```{r}
+# To fully extend the benefit of logistic regression, bankcard utlizations
+# are grouped into few bins instead of using real value
+loandata$BankCardUse[loandata$BankcardUtilization < quantile(loandata$BankcardUtilization,probs = 0.25, "na.rm" = TRUE)] <- 0.2
+
+loandata$BankCardUse[loandata$BankcardUtilization >= quantile(loandata$BankcardUtilization,probs = 0.25, "na.rm" = TRUE) &loandata$BankcardUtilization < 
+                       quantile(loandata$BankcardUtilization,probs = 0.5, "na.rm"= TRUE)] <- 0.5
+
+loandata$BankCardUse[loandata$BankcardUtilization >= quantile(loandata$BankcardUtilization,probs = 0.5, "na.rm" = TRUE)&loandata$BankcardUtilization < 
+                       quantile(loandata$BankcardUtilization,probs = 0.75, "na.rm" = TRUE)] <- 0.75
+
+loandata$BankCardUse[loandata$BankcardUtilization >= 0.75] <- 0.9
+
+```
+#### 3.1.2 Dimension reduction
+```{r}
+# Preserve the cleaned dataset for future reference
+LoanML <- cbind(loandata)
+```
+
+```{r}
+mr1 <- c("CreditGrade", "BorrowerAPR", "LenderYield", "EstimatedEffectiveYield", 
+        "EstimatedLoss", "EstimatedReturn", "ProsperRating (Alpha)", 
+        "Occupation", "CurrentlyInGroup", "GroupKey", "IncomeRange", "PercentFunded")
+
+LoanML <- LoanML[,!names(LoanML) %in% mr1]
+```
+
+```{r}
+str(LoanML)
+```
+
+
+```{r}
+# Drop more columns that irrelevant to the analysis, some features can be well
+# descripbed by other feature
+mr2 <- c("ListingCategory", # a feature for plot only
+         "BorrowerState", #Way too many categorical variable with not that much information
+         "FirstRecordedCreditLine", #Credit History already described by other features
+         "BankCardUse", #grouped bankcard utlization, decide not to use
+         "EmploymentStatusDuration",
+         "ScorexChangeAtTimeOfListing", # way too many missing values without remdials
+         "ProsperRating..numeric.", # closely related to Prosper Score
+         "C"
+         )
+
+LoanML <- LoanML[,!names(LoanML) %in% mr2]
+
+```
+
+```{r}
+#Transfer ListingCategory to factor
+LoanML$ListingCategory..numeric. <- factor(LoanML$ListingCategory..numeric.)
+```
+
+
+```{r}
+table(LoanML$EmploymentStatus)
+```
+
+
+```{r}
+# Convert boolean value for IsBorrowerHomeowner to 1 and 0
+LoanML$IsBorrowerHomeowner <- as.integer(as.logical(LoanML$IsBorrowerHomeowner))
+head(LoanML$IsBorrowerHomeowner)
+
+# COnvert boolean value for IncomeVerifiable to 1 and 0
+
+LoanML$IncomeVerifiable <- as.integer(as.logical(LoanML$IncomeVerifiable))
+head(LoanML$IncomeVerifiable)
+
+```
+
+```{r}
+# convert EmploymentStatus to either employed or not, consider not available as 
+# unemployed
+
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Employed"] <- "a"
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Full-time"] <- as.integer(1)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Not available"] <- as.integer(0)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Not employed"] <- as.integer(0)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Other"] <- as.integer(0)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Part-time"] <- as.integer(1)
+#$EmploymentStatus[LoanML$EmploymentStatus == "Retired"] <- as.integer(0)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == "Self-employed"] <- as.integer(1)
+#LoanML$EmploymentStatus[LoanML$EmploymentStatus == ""] <- as.integer(0)
+```
+
+
+#### 3.1.3 Encode the response variable
+```{r}
+# encode the loanstatus
+# Completed -> 1, Deliquncies -> 0
+LoanML$LoanStatus[LoanML$LoanStatus == "Completed"] <- as.integer(1)
+LoanML$LoanStatus[LoanML$LoanStatus == "deliquency"] <- as.integer(0)
+
+
+```
+
+```{r}
+# Test
+head(LoanML$LoanStatus)
+```
+
+#### 3.1.4 encode categorical predictors
+
+```{r}
+# Convert the loanStatus to numeric 
+LoanML$LoanStatus <- as.numeric(as.character(LoanML$LoanStatus))
+```
+
+
+```{r}
+
+dmy <- dummyVars("~ .", data = LoanML, fullRank = T)
+LoanML <- data.frame(predict(dmy, newdata = LoanML))
+
+```
+
+```{r}
+LoanML$LoanStatus <- as.character(LoanML$LoanStatus)
+LoanML$LoanStatus <- as.factor(LoanML$LoanStatus)
+```
+
+
+
+
+#### 3.1.5 Check the missing value before run the machine learning model
+
+```{r}
+
+colSums(is.na(LoanML))
+
+```
+
+#### 3.1.6 Clean missing values
+3 features still have missing values: CreditScoreRangeLower, 
+TotalCreditLinepast7years, PublicRecordsLast10Years. For all of these information
+we can't retrive by any means, so we have to drop some rows to avoid missing value
+
+```{r}
+# 
+LoanML <- LoanML[complete.cases(LoanML), ]
+```
+
+```{r}
+# test
+colSums(is.na(LoanML))
+dim(LoanML)
+```
+```{r}
+# Move the reponse variable to the front  
+LoanML <- LoanML %>% select(LoanStatus, everything())
+```
+
+```{r}
+head(LoanML[,1])
+```
+
+### 3.2 Split the training and testing dataset
+```{r}
+
+# Divide the dataset in 2:1 raio to form training and testing dataset
+set.seed(2)
+sub<-sample(1:nrow(LoanML),round(nrow(LoanML)*2/3))
+data_train<-LoanML[sub,]
+data_test<-LoanML[-sub,]
+```
+
+```{r}
+dim(LoanML)
+```
+
+
+```{r}
+# Test
+length(sub)
+dim(data_train)
+dim(data_test)
+```
+
+
+
+### 3.3 feature selection
+
+
+```{r}
+
+sum(is.infinite(LoanML$DebtToIncomeRatio))
+dim(LoanML)
+```
+
+```{r}
+#LoanML[,1]
+```
+
+```{r}
+
+# set.seed(1)
+# SelectControl <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# selections <- rfe(data_train[,2:68], data_train[,1], rfeControl=SelectControl)
+
+```
+
+```{r}
+# print(selections)
+# ```
+# 
+# ```{r}
+# #pick top 20 features as the model
+# predictors(selections)
+```
+Interestingly, none of the category variable entered the top 20 features.
+
+```{r}
+model_formula <- LoanStatus ~  BorrowerRate + CreditScoreRangeLower + TotalInquiries + MonthlyLoanPayment + Term + InquiriesLast6Months + StatedMonthlyIncome + CurrentDelinquencies + OpenRevolvingMonthlyPayment + DebtToIncomeRatio + AvailableBankcardCredit + LoanOriginalAmount +  OpenRevolvingAccounts + Investors + ProsperScore + BankcardUtilization + TotalTrades + TradesNeverDelinquent..percentage. + RevolvingCreditBalance + CurrentCreditLines   
+```
+
+
+### 3.4 Model training
+
+#### 3.4.1 panalized logistic regression
+
+```{r}
+
+c1 <- makeCluster(detectCores()-1)
+registerDoParallel(c1)
+
+```
+
+```{r}
+# set cross-validation parameters, this parameters are tailed for pararell
+# computing and changed everything I train a new model
+set.seed(123)
+
+seeds <- vector(mode = "list", length = 11)
+
+for(i in 1:10) seeds[[i]]<- sample.int(n=1000, 2)
+seeds[[11]]<-sample.int(1000, 1)
+
+modelControl <- trainControl(method="cv", number = 3, allowParallel=TRUE)
+```
+
+
+
+```{r}
+Model_LR <- train(model_formula,
+                   data=data_train,
+                   method="plr",
+                   trControl=modelControl)
+```
+
+```{r}
+#Print the model result and shut down the cluster
+print(Model_LR)
+
+```
+
+
+
+
+#### 3.4.2 General boosted regression
+
+```{r}
+Model_GBM <- train(model_formula,
+                   data=data_train,
+                   method="gbm",
+                   trControl=modelControl)
+```
+```{r}
+print(Model_GBM)
+```
+
+
+#### 3.4.3 xgboost tree 
+
+```{r}
+Model_XGBT <- train(model_formula,
+                   data=data_train,
+                   method="xgbTree",
+                   trControl=modelControl)
+```
+
+```{r}
+stopCluster(c1)
+registerDoSEQ()
+```
+
+```{r}
+#print(Model_XGBT)
+```
+
+### 3.5 Testing 
+
+#### 3.5.1 Testing Logistic regression
+
+```{r}
+# Predict the LR model
+data_test$LR_Prediction <- predict(Model_LR, data_test)
+```
+
+#### 3.5.2 Testing general boosted regression
+```{r}
+# Predict the model
+data_test$GBR_Prediction <- predict(Model_GBM,data_test)
+```
+
+#### 3.5.3 Testing extreme gradient boosted tree
+```{r}
+# Predict the model
+data_test$XGBT_Prediction <- predict(Model_XGBT,data_test)
+```
+
+#### 3.5.4 Generate Confusion table for each model
+
+```{r}
+# table_PLR <- table(factor(data_test$LR_Prediction, levels=min(data_test$LoanStatus):max(data_test$LoanStatus)), #factor(data_test$LoanStatus, levels=min(data_test$LoanStatus):max(data_test$LoanStatus)))
+
+#Confustion table for PLR model
+confusionMatrix(data_test$LR_Prediction, data_test$LoanStatus)
+```
+```{r}
+# Confustion table for GBR model
+confusionMatrix(data_test$GBR_Prediction, data_test$LoanStatus)
+```
+```{r}
+# Confustion table for XgbTree model
+confusionMatrix(data_test$XGBT_Prediction, data_test$LoanStatus)
+```
+
+```{r}
+names(LoanML)
+```
+
+### 3.6 Model comparison
+The best model will be the model with less posibility of false positive will 
+result in loss of capital investiment. In the other word, the model with
+highest specificity will be picked
+
+In this case the model using GBR is nearly 3% more than the other two model,
+so we choose to use this model.
+
+### 4 Conclusion and implication
+To test the practicability of the model, i randomly pickd 30 samples with 20 loans each from the test set and predicted the earning with or without using our machine learning model. 
+
+```{r}
+# since our data set is reletively small, I used rbind # instead of other method, if the dataset is any larger, the rbind function should be avoided.
+Return_table <- data.frame(matrix(ncol = 6, nrow = 30))
+Return_table <- Return_table[0,]
+iterations = 30
+for (i in 1:iterations){
+  # Randomly pick samples
+  Pred <- data_test[sample(nrow(data_test), 20), ]
+  # Convert the LoanStatus to Integer so they can be    calculated
+  Pred$LoanStatus <- as.numeric(as.character(Pred$LoanStatus))
+  Pred$GBR_Prediction <- as.numeric(as.character(Pred$GBR_Prediction))
+  
+  # calculate total earning invest blindly
+  Pred$blind_gain <- Pred$LoanOriginalAmount * Pred$BorrowerRate - 
+    Pred$LoanOriginalAmount * (1 - Pred$LoanStatus)
+  
+  # calculate total eraning investing using machine
+  # learning model
+
+  Pred$ML_gain <- Pred$LoanOriginalAmount * Pred$BorrowerRate * 
+    Pred$GBR_Prediction - Pred$LoanOriginalAmount * Pred$GBR_Prediction * 
+    (1 - Pred$LoanStatus)
+  
+  profit_blind <- sum(Pred$blind_gain)
+  profit_ML <- sum(Pred$ML_gain)
+  
+  return_blind <- profit_blind/sum(Pred$LoanOriginalAmount)
+  return_ML <- profit_ML/sum(Pred$GBR_Prediction * Pred$LoanOriginalAmount)
+  
+  #attach result to the dataframe
+  Return_table <- rbind(Return_table,c(profit_blind, profit_ML, 
+                                       return_blind, return_ML,
+                                       profit_ML-profit_blind,
+                                       return_ML - return_blind))
+}
+names(Return_table) <- c("profit_blind", "profit_ML", 
+                                       "return_blind", "return_ML",
+                                       "profit_increase",
+                                       "return_increase")
+```
+
+```{r}
+Return_table
+```
+```{r}
+mean(Return_table$profit_increase, na.rm=TRUE)
+mean(Return_table$return_increase, na.rm=TRUE)
+```
+
+
